@@ -4,3 +4,18 @@ node_modules
 .vscode-test/
 *.vsix
 .env
+.env.local
+
+# Python virtual environment
+claude-sdk-venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+
+# Claude Code settings
+.claude/
