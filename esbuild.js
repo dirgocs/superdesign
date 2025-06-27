@@ -81,16 +81,11 @@ async function main() {
 		await ctx.dispose();
 		await webviewCtx.dispose();
 		
-		// Copy Claude Code SDK to dist for runtime access
+		// Copy assets to dist folder
 		const fs = require('fs');
 		const path = require('path');
-		const srcPath = path.join(__dirname, 'node_modules', '@anthropic-ai', 'claude-code');
-		const destPath = path.join(__dirname, 'dist', 'node_modules', '@anthropic-ai', 'claude-code');
 		
-		// Create directory structure
-		fs.mkdirSync(path.dirname(destPath), { recursive: true });
-		
-		// Copy files
+		// Copy files helper function
 		function copyDir(src, dest) {
 			fs.mkdirSync(dest, { recursive: true });
 			const entries = fs.readdirSync(src, { withFileTypes: true });
@@ -101,10 +96,6 @@ async function main() {
 			}
 		}
 		
-		copyDir(srcPath, destPath);
-		console.log('Claude Code SDK copied to dist/');
-		
-		// Copy assets to dist folder
 		const assetsSrcPath = path.join(__dirname, 'src', 'assets');
 		const assetsDestPath = path.join(__dirname, 'dist', 'src', 'assets');
 		

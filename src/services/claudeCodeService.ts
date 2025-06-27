@@ -43,98 +43,14 @@ export class ClaudeCodeService {
             await this.setupWorkingDirectory();
             this.outputChannel.appendLine('setupWorkingDirectory() completed');
 
-            // Check if API key is configured
-            this.outputChannel.appendLine('Checking API key configuration...');
-            const config = vscode.workspace.getConfiguration('superdesign');
-            const apiKey = config.get<string>('anthropicApiKey');
-            this.outputChannel.appendLine(`API key configured: ${!!apiKey}`);
+            // Setup Python bridge paths
+            await this.setupPythonBridge();
             
-            if (!apiKey) {
-                this.outputChannel.appendLine('No API key found, showing error message');
-                const action = await vscode.window.showErrorMessage(
-                    'Anthropic API key is required for Claude Code integration.',
-                    'Open Settings'
-                );
-                if (action === 'Open Settings') {
-                    vscode.commands.executeCommand('workbench.action.openSettings', 'superdesign.anthropicApiKey');
-                }
-                throw new Error('Missing API key');
-            }
-
-            // Set the environment variable for Claude Code SDK
-            this.outputChannel.appendLine('Setting environment variable for Claude Code SDK');
-            process.env.ANTHROPIC_API_KEY = apiKey;
-
-                        // Dynamically import Claude Code SDK
-            this.outputChannel.appendLine('Dynamically importing Claude Code SDK...');
-            try {
-                this.outputChannel.appendLine(`Current working directory: ${process.cwd()}`);
-                this.outputChannel.appendLine(`__dirname: ${__dirname}`);
-                
-                // Try importing from the copied module location first
-                let claudeCodeModule;
-                try {
-                    // Try multiple possible paths for the extension location
-                    const possiblePaths = [
-                        path.resolve(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'sdk.mjs'),
-                        path.resolve(__dirname, 'node_modules', '@anthropic-ai', 'claude-code', 'sdk.mjs'),
-                        path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'sdk.mjs')
-                    ];
-                    
-                    let importSucceeded = false;
-                    for (const modulePath of possiblePaths) {
-                        try {
-                            this.outputChannel.appendLine(`Trying to import from: ${modulePath}`);
-                            if (fs.existsSync(modulePath)) {
-                                this.outputChannel.appendLine(`File exists at: ${modulePath}`);
-                                claudeCodeModule = await import(`file://${modulePath}`);
-                                this.outputChannel.appendLine('Imported from copied module location');
-                                importSucceeded = true;
-                                break;
-                            } else {
-                                this.outputChannel.appendLine(`File does not exist at: ${modulePath}`);
-                            }
-                        } catch (pathError) {
-                            this.outputChannel.appendLine(`Failed to import from ${modulePath}: ${pathError}`);
-                            continue;
-                        }
-                    }
-                    
-                    if (!importSucceeded) {
-                        throw new Error('All local import paths failed');
-                    }
-                } catch (localImportError) {
-                    this.outputChannel.appendLine(`Local import failed: ${localImportError}`);
-                    // Fallback to standard import
-                    try {
-                        claudeCodeModule = await import('@anthropic-ai/claude-code');
-                        this.outputChannel.appendLine('Imported from standard location');
-                    } catch (standardImportError) {
-                        this.outputChannel.appendLine(`Standard import also failed: ${standardImportError}`);
-                        throw standardImportError;
-                    }
-                }
-                
-                this.outputChannel.appendLine(`Claude Code module imported: ${typeof claudeCodeModule}`);
-                this.outputChannel.appendLine(`Available exports: ${Object.keys(claudeCodeModule)}`);
-                this.claudeCodeQuery = claudeCodeModule.query;
-                
-                if (!this.claudeCodeQuery) {
-                    throw new Error('Query function not found in Claude Code module');
-                }
-                
-                this.outputChannel.appendLine('Claude Code SDK dynamically imported successfully');
-            } catch (importError) {
-                this.outputChannel.appendLine(`Failed to import Claude Code SDK: ${importError}`);
-                this.outputChannel.appendLine(`Import error stack: ${importError instanceof Error ? importError.stack : 'No stack trace'}`);
-                throw new Error(`Claude Code SDK import failed: ${importError}`);
-            }
-
             this.isInitialized = true;
             
-            this.outputChannel.appendLine(`Claude Code SDK initialized successfully with working directory: ${this.workingDirectory}`);
+            this.outputChannel.appendLine(`Claude Code OAuth bridge initialized successfully with working directory: ${this.workingDirectory}`);
         } catch (error) {
-            this.outputChannel.appendLine(`Failed to initialize Claude Code SDK: ${error}`);
+            this.outputChannel.appendLine(`Failed to initialize Claude Code OAuth bridge: ${error}`);
             vscode.window.showErrorMessage(`Failed to initialize Claude Code: ${error}`);
             throw error;
         }
@@ -186,17 +102,79 @@ export class ClaudeCodeService {
         }
     }
 
+    private async setupPythonBridge(): Promise<void> {
+        try {
+            // Find Python executable
+            const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+            const venvPath = path.join(workspaceRoot, 'claude-sdk-venv', 'bin', 'python3');
+            
+            if (fs.existsSync(venvPath)) {
+                this.pythonPath = venvPath;
+                this.outputChannel.appendLine(`Using Python from venv: ${this.pythonPath}`);
+            } else {
+                this.pythonPath = 'python3';
+                this.outputChannel.appendLine(`Using system Python: ${this.pythonPath}`);
+            }
+            
+            // Set bridge script path
+            this.bridgeScriptPath = path.join(workspaceRoot, 'claude_bridge.py');
+            
+            if (!fs.existsSync(this.bridgeScriptPath)) {
+                throw new Error(`Bridge script not found at: ${this.bridgeScriptPath}`);
+            }
+            
+            this.outputChannel.appendLine(`Bridge script path: ${this.bridgeScriptPath}`);
+            
+            // Test Python bridge
+            await this.testPythonBridge();
+            
+        } catch (error) {
+            this.outputChannel.appendLine(`Failed to setup Python bridge: ${error}`);
+            throw error;
+        }
+    }
+    
+    private async testPythonBridge(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const testProcess = spawn(this.pythonPath, ['--version']);
+            let output = '';
+            
+            testProcess.stdout.on('data', (data) => {
+                output += data.toString();
+            });
+            
+            testProcess.stderr.on('data', (data) => {
+                output += data.toString();
+            });
+            
+            testProcess.on('close', (code) => {
+                if (code === 0) {
+                    this.outputChannel.appendLine(`Python bridge test successful: ${output.trim()}`);
+                    resolve();
+                } else {
+                    this.outputChannel.appendLine(`Python bridge test failed with code ${code}: ${output}`);
+                    reject(new Error(`Python test failed: ${output}`));
+                }
+            });
+            
+            testProcess.on('error', (error) => {
+                this.outputChannel.appendLine(`Python bridge test error: ${error}`);
+                reject(error);
+            });
+        });
+    }
+
     private async ensureInitialized(): Promise<void> {
         if (this.initializationPromise) {
             await this.initializationPromise;
         }
-        if (!this.isInitialized || !this.claudeCodeQuery) {
-            throw new Error('Claude Code SDK not initialized');
+        if (!this.isInitialized || !this.pythonPath || !this.bridgeScriptPath) {
+            throw new Error('Claude Code OAuth bridge not initialized');
         }
     }
 
     async query(prompt: string, options?: Partial<ClaudeCodeOptions>, abortController?: AbortController, onMessage?: (message: SDKMessage) => void): Promise<SDKMessage[]> {
-        this.outputChannel.appendLine('=== QUERY FUNCTION CALLED ===');
+        this.outputChannel.appendLine('=== OAUTH QUERY FUNCTION CALLED ===');
         this.outputChannel.appendLine(`Query prompt: ${prompt.substring(0, 200)}...`);
         this.outputChannel.appendLine(`Query options: ${JSON.stringify(options, null, 2)}`);
         this.outputChannel.appendLine(`Streaming enabled: ${!!onMessage}`);
@@ -343,47 +321,109 @@ Your goal is to extract a generalized and reusable design system from the screen
                 options: queryParams.options
             }, null, 2)}`);
             
-            this.outputChannel.appendLine('Starting Claude Code SDK query...');
+            this.outputChannel.appendLine(`Final query options: ${JSON.stringify(finalOptions, null, 2)}`);
+            this.outputChannel.appendLine('Starting Claude Code OAuth query via Python bridge...');
 
-            if (!this.claudeCodeQuery) {
-                throw new Error('Claude Code SDK not properly initialized - query function not available');
-            }
-
-            let messageCount = 0;
-            for await (const message of this.claudeCodeQuery(queryParams)) {
-                messageCount++;
-                const subtype = 'subtype' in message ? message.subtype : undefined;
-                this.outputChannel.appendLine(`Received message ${messageCount}: type=${message}`);
-                if (message.type === 'result') {
-                    this.outputChannel.appendLine(`Result message: ${JSON.stringify(message, null, 2)}`);
-                }
-                messages.push(message as SDKMessage);
-                
-                // Call the streaming callback if provided
-                if (onMessage) {
-                    try {
-                        onMessage(message as SDKMessage);
-                    } catch (callbackError) {
-                        this.outputChannel.appendLine(`Streaming callback error: ${callbackError}`);
-                        // Don't break the loop if callback fails
-                    }
-                }
-            }
-
-            const lastMessageWithSessionId = [...messages].reverse().find(m => 'session_id' in m && m.session_id);
-            if (lastMessageWithSessionId && 'session_id' in lastMessageWithSessionId && lastMessageWithSessionId.session_id) {
-                this.currentSessionId = lastMessageWithSessionId.session_id;
-                this.outputChannel.appendLine(`Updated session ID to: ${this.currentSessionId}`);
-            }
-
-            this.outputChannel.appendLine(`Query completed successfully. Total messages: ${messages.length}`);
-            return messages;
+            // Execute Python bridge script
+            const result = await this.executePythonBridge(prompt, finalOptions, abortController, onMessage);
+            
+            this.outputChannel.appendLine(`Query completed successfully. Total messages: ${result.length}`);
+            return result;
         } catch (error) {
-            this.outputChannel.appendLine(`Claude Code query failed: ${error}`);
+            this.outputChannel.appendLine(`Claude Code OAuth query failed: ${error}`);
             this.outputChannel.appendLine(`Error stack: ${error instanceof Error ? error.stack : 'No stack trace'}`);
-            vscode.window.showErrorMessage(`Claude Code query failed: ${error}`);
+            vscode.window.showErrorMessage(`Claude Code OAuth query failed: ${error}`);
             throw error;
         }
+    }
+    
+    private async executePythonBridge(prompt: string, options: Partial<ClaudeCodeOptions>, abortController?: AbortController, onMessage?: (message: SDKMessage) => void): Promise<SDKMessage[]> {
+        return new Promise((resolve, reject) => {
+            const messages: SDKMessage[] = [];
+            
+            const args = [
+                this.bridgeScriptPath,
+                '--prompt', prompt,
+                '--options', JSON.stringify(options)
+            ];
+            
+            this.outputChannel.appendLine(`Executing Python bridge: ${this.pythonPath} ${args.join(' ')}`);
+            
+            const pythonProcess = spawn(this.pythonPath, args, {
+                cwd: this.workingDirectory
+            });
+            
+            let stdoutBuffer = '';
+            let stderrBuffer = '';
+            
+            pythonProcess.stdout.on('data', (data) => {
+                const chunk = data.toString();
+                stdoutBuffer += chunk;
+                
+                // Process complete JSON messages
+                const lines = stdoutBuffer.split('\n');
+                stdoutBuffer = lines.pop() || ''; // Keep incomplete line
+                
+                for (const line of lines) {
+                    if (line.trim()) {
+                        try {
+                            const message: SDKMessage = JSON.parse(line.trim());
+                            messages.push(message);
+                            
+                            // Track session ID
+                            if (message.session_id) {
+                                this.currentSessionId = message.session_id;
+                            }
+                            
+                            // Call streaming callback if provided
+                            if (onMessage) {
+                                try {
+                                    onMessage(message);
+                                } catch (callbackError) {
+                                    this.outputChannel.appendLine(`Streaming callback error: ${callbackError}`);
+                                }
+                            }
+                            
+                            this.outputChannel.appendLine(`Received message: type=${message.type}, content=${message.content.substring(0, 100)}...`);
+                        } catch (parseError) {
+                            this.outputChannel.appendLine(`Failed to parse JSON line: ${line}`);
+                            this.outputChannel.appendLine(`Parse error: ${parseError}`);
+                        }
+                    }
+                }
+            });
+            
+            pythonProcess.stderr.on('data', (data) => {
+                stderrBuffer += data.toString();
+                this.outputChannel.appendLine(`Python bridge stderr: ${data.toString()}`);
+            });
+            
+            pythonProcess.on('close', (code) => {
+                this.outputChannel.appendLine(`Python bridge process exited with code: ${code}`);
+                
+                if (code === 0) {
+                    resolve(messages);
+                } else {
+                    const errorMessage = `Python bridge failed with code ${code}. stderr: ${stderrBuffer}`;
+                    this.outputChannel.appendLine(errorMessage);
+                    reject(new Error(errorMessage));
+                }
+            });
+            
+            pythonProcess.on('error', (error) => {
+                this.outputChannel.appendLine(`Python bridge process error: ${error}`);
+                reject(error);
+            });
+            
+            // Handle abort controller
+            if (abortController) {
+                abortController.signal.addEventListener('abort', () => {
+                    this.outputChannel.appendLine('Query aborted by user');
+                    pythonProcess.kill('SIGTERM');
+                    reject(new Error('Query aborted'));
+                });
+            }
+        });
     }
 
     get isReady(): boolean {
